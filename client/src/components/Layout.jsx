@@ -1,19 +1,32 @@
 import React from 'react';
-import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, BookOpen, Receipt, CreditCard, Users, RotateCcw, Package, Calendar } from 'lucide-react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { LayoutDashboard, BookOpen, Receipt, CreditCard, Users, RotateCcw, Package, Calendar, LogOut } from 'lucide-react';
+import { auth } from '../firebase'; // Firebase auth import kiya
+import { signOut } from 'firebase/auth'; // Logout function import kiya
 
 const Layout = ({ children }) => {
     const location = useLocation();
+    const navigate = useNavigate(); // Page change karne ke liye
+
+    // Logout ka function
+    const handleLogout = async () => {
+        try {
+            await signOut(auth); // Firebase se logout
+            navigate('/login'); // Wapis login page par bhej do
+        } catch (error) {
+            console.error("Logout error:", error);
+        }
+    };
 
     const navItems = [
         { path: '/', label: 'Dashboard', icon: LayoutDashboard },
         { path: '/customers', label: 'Customers', icon: Users },
-        { path: '/products', label: 'Products', icon: Package }, // New
+        { path: '/products', label: 'Products', icon: Package },
         { path: '/sales', label: 'Sales Ledger', icon: BookOpen },
         { path: '/returns', label: 'Sales Return', icon: RotateCcw },
         { path: '/recovery', label: 'Recovery Log', icon: Receipt },
         { path: '/cheques', label: 'Cheque Management', icon: CreditCard },
-        { path: '/register', label: 'Daily Register', icon: Calendar }, // New
+        { path: '/register', label: 'Daily Register', icon: Calendar },
     ];
 
     return (
@@ -57,12 +70,23 @@ const Layout = ({ children }) => {
             </aside>
 
             {/* Main Content */}
-            <main className="flex-1 flex flex-col overflow-hidden">
+            <main className="flex-1 flex flex-col overflow-hidden bg-slate-50">
                 {/* Mobile Header */}
                 <header className="md:hidden bg-primary text-white p-4 flex justify-between items-center">
                     <h1 className="font-bold">Bio Care</h1>
                     <button className="p-2">Menu</button>
                 </header>
+
+                {/* Desktop Top Bar (Jahan Sign Out Button Hai) */}
+                <div className="flex justify-end items-center p-4 bg-white shadow-sm">
+                    <button
+                        onClick={handleLogout}
+                        className="flex items-center space-x-2 px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 hover:text-red-700 transition-colors border border-red-100"
+                    >
+                        <LogOut size={18} />
+                        <span className="font-medium">Sign Out</span>
+                    </button>
+                </div>
 
                 {/* Page Content */}
                 <div className="flex-1 overflow-auto p-6 md:p-8">
