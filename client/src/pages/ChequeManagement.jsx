@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import api from '../api/axios';
+import { supabase } from '../supabase';
 import { FileSpreadsheet, AlertTriangle } from 'lucide-react';
 
 const ChequeManagement = () => {
@@ -19,10 +19,30 @@ const ChequeManagement = () => {
 
     const fetchCheques = async () => {
         try {
-            const res = await api.get('/cheques');
-            setCheques(res.data);
+            const { data, error } = await supabase
+                .from('cheques')
+                .select(`
+                    *,
+                    recoveries (
+                        shop_id,
+                        amount,
+                        customers ( shop_name )
+                    )
+                `)
+                .order('due_date', { ascending: true });
+
+            if (error) throw error;
+            
+            const formattedData = data.map(c => ({
+                ...c,
+                shop_name: c.recoveries?.customers?.shop_name || 'Unknown',
+                shop_id: c.recoveries?.shop_id,
+                recovery_amount: c.recoveries?.amount
+            }));
+            
+            setCheques(formattedData);
         } catch (error) {
-            console.error('Error fetching cheques:', error);
+            console.error('Error fetching cheques:', error.message);
         }
     };
 
@@ -40,19 +60,50 @@ const ChequeManagement = () => {
     const handleStatusUpdate = async (e) => {
         e.preventDefault();
         try {
-            await api.patch(`/cheques/${selectedCheque.id}/status`, statusData);
+            const oldStatus = selectedCheque.status;
+            const newStatus = statusData.status;
+
+            // 1. Update Cheque Status
+            const { error: updateError } = await supabase
+                .from('cheques')
+                .update({
+                    status: newStatus,
+                    bounce_reason: newStatus === 'Bounced' ? statusData.bounce_reason : null,
+                    deposit_date: newStatus === 'Deposited' || newStatus === 'Cleared' ? statusData.deposit_date : null,
+                    clearance_date: newStatus === 'Cleared' ? statusData.clearance_date : null
+                })
+                .eq('id', selectedCheque.id);
+
+            if (updateError) throw updateError;
+
+            // 2. Agar Cheque Bounce ho, toh Customer ke balance mein wapis paise daal dein
+            if (newStatus === 'Bounced' && oldStatus !== 'Bounced') {
+                const { data: customerData, error: custError } = await supabase
+                    .from('customers')
+                    .select('balance')
+                    .eq('id', selectedCheque.shop_id)
+                    .single();
+
+                if (!custError && customerData) {
+                    const newBalance = (customerData.balance || 0) + selectedCheque.recovery_amount;
+                    await supabase
+                        .from('customers')
+                        .update({ balance: newBalance })
+                        .eq('id', selectedCheque.shop_id);
+                }
+            }
+
             setShowStatusModal(false);
             fetchCheques();
+            alert("Cheque status updated successfully!");
         } catch (error) {
-            alert('Error updating status: ' + (error.response?.data?.error || error.message));
+            alert('Error updating status: ' + error.message);
         }
     };
 
     const handleExport = () => {
-        window.open('http://localhost:5000/api/reports/cheques?format=xlsx', '_blank');
+        alert("Export to Excel will be enabled soon!");
     };
-
-
 
     const getStatusColor = (status) => {
         switch (status) {
@@ -77,7 +128,6 @@ const ChequeManagement = () => {
                 </div>
             </div>
 
-            {/* Table */}
             <div className="card overflow-hidden">
                 <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
@@ -125,7 +175,6 @@ const ChequeManagement = () => {
                 </div>
             </div>
 
-            {/* Status Update Modal */}
             {showStatusModal && selectedCheque && (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
                     <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-2xl">

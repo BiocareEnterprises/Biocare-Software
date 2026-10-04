@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import { supabase } from '../supabase';
 import { RotateCcw, Save } from 'lucide-react';
 
 const SalesReturn = () => {
@@ -18,10 +18,15 @@ const SalesReturn = () => {
 
     const fetchShops = async () => {
         try {
-            const res = await axios.get('http://localhost:5000/api/shops');
-            setShops(res.data);
+            const { data, error } = await supabase
+                .from('customers')
+                .select('*')
+                .order('shop_name', { ascending: true });
+            
+            if (error) throw error;
+            if (data) setShops(data);
         } catch (error) {
-            console.error('Error fetching shops:', error);
+            console.error('Error fetching shops:', error.message);
         }
     };
 
@@ -32,11 +37,36 @@ const SalesReturn = () => {
     const handleSubmit = async (e) => {
         e.preventDefault();
         try {
-            await axios.post('http://localhost:5000/api/sales', {
-                ...formData,
-                type: 'Return', // Critical: Mark as Return
-                salesman_name: 'Admin' // Placeholder
-            });
+            const amount = parseFloat(formData.bill_amount);
+            const shopId = parseInt(formData.shop_id);
+
+            // 1. Insert Return Invoice
+            const { error: insertError } = await supabase
+                .from('invoices')
+                .insert([{
+                    date: formData.date,
+                    shop_id: shopId,
+                    bill_amount: amount,
+                    invoice_no: formData.invoice_no,
+                    notes: formData.notes,
+                    type: 'Return',
+                    salesman_name: 'Admin'
+                }]);
+
+            if (insertError) throw insertError;
+
+            // 2. Update Customer Balance (Deduct amount from balance)
+            const customer = shops.find(s => s.id === shopId);
+            if (customer) {
+                const newBalance = (customer.balance || 0) - amount;
+                const { error: updateError } = await supabase
+                    .from('customers')
+                    .update({ balance: newBalance })
+                    .eq('id', shopId);
+                
+                if (updateError) throw updateError;
+            }
+
             alert('Sales Return recorded successfully!');
             setFormData({
                 date: new Date().toISOString().split('T')[0],
@@ -45,9 +75,10 @@ const SalesReturn = () => {
                 invoice_no: '',
                 notes: ''
             });
+            fetchShops(); // Refresh balances
         } catch (error) {
-            console.error('Error recording return:', error);
-            alert('Error: ' + (error.response?.data?.error || error.message));
+            console.error('Error recording return:', error.message);
+            alert('Error: ' + error.message);
         }
     };
 
@@ -84,7 +115,7 @@ const SalesReturn = () => {
                                 <option value="">Select Shop</option>
                                 {shops.map(shop => (
                                     <option key={shop.id} value={shop.id}>
-                                        {shop.name} (Bal: {shop.current_balance})
+                                        {shop.shop_name} (Bal: Rs. {shop.balance || 0})
                                     </option>
                                 ))}
                             </select>
