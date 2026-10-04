@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import api from '../api/axios';
+import { supabase } from '../supabase';
 import { Calendar, Save, FileSpreadsheet } from 'lucide-react';
 
 const DailyRegister = () => {
@@ -17,10 +17,16 @@ const DailyRegister = () => {
 
     const fetchRegisters = async () => {
         try {
-            const res = await api.get('/register');
-            setRegisters(res.data);
+            const { data, error } = await supabase
+                .from('daily_registers')
+                .select('*')
+                .order('date', { ascending: false })
+                .limit(30);
+
+            if (error) throw error;
+            setRegisters(data || []);
         } catch (error) {
-            console.error('Error fetching registers:', error);
+            console.error('Error fetching registers:', error.message);
         }
     };
 
@@ -31,12 +37,35 @@ const DailyRegister = () => {
     const handleSubmit = async (e) => {
         e.preventDefault();
         try {
-            await api.post('/register', formData);
-            alert('Register updated successfully');
+            const payload = {
+                date: formData.date,
+                opening_balance: parseFloat(formData.opening_balance) || 0,
+                closing_balance: parseFloat(formData.closing_balance) || 0,
+                notes: formData.notes
+            };
+
+            const { data: existing } = await supabase
+                .from('daily_registers')
+                .select('id')
+                .eq('date', formData.date)
+                .single();
+
+            if (existing) {
+                await supabase.from('daily_registers').update(payload).eq('id', existing.id);
+            } else {
+                await supabase.from('daily_registers').insert([payload]);
+            }
+
+            alert('Register updated successfully!');
             fetchRegisters();
+            setFormData({ ...formData, opening_balance: '', closing_balance: '', notes: '' });
         } catch (error) {
-            alert('Error updating register: ' + (error.response?.data?.error || error.message));
+            alert('Error updating register: ' + error.message);
         }
+    };
+
+    const handleExport = () => {
+        alert("Export functionality will be enabled soon!");
     };
 
     return (
@@ -46,63 +75,31 @@ const DailyRegister = () => {
                     <Calendar className="text-accent" size={24} />
                     <h2 className="text-2xl font-bold text-slate-800">Daily Register</h2>
                 </div>
-                <button
-                    onClick={() => window.open('http://localhost:5000/api/reports/register?format=xlsx', '_blank')}
-                    className="btn-primary bg-green-600 hover:bg-green-700 flex items-center space-x-2"
-                >
+                <button onClick={handleExport} className="btn-primary bg-green-600 hover:bg-green-700 flex items-center space-x-2">
                     <FileSpreadsheet size={18} />
                     <span>Export to Excel</span>
                 </button>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Form */}
                 <div className="card lg:col-span-1 h-fit">
                     <h3 className="text-lg font-bold mb-4">Update Today's Register</h3>
                     <form onSubmit={handleSubmit} className="space-y-4">
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">Date</label>
-                            <input
-                                type="date"
-                                name="date"
-                                value={formData.date}
-                                onChange={handleInputChange}
-                                className="w-full p-2 border border-slate-300 rounded-lg"
-                                required
-                            />
+                            <input type="date" name="date" value={formData.date} onChange={handleInputChange} className="w-full p-2 border border-slate-300 rounded-lg" required />
                         </div>
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">Opening Balance</label>
-                            <input
-                                type="number"
-                                name="opening_balance"
-                                value={formData.opening_balance}
-                                onChange={handleInputChange}
-                                className="w-full p-2 border border-slate-300 rounded-lg"
-                                placeholder="0.00"
-                            />
+                            <input type="number" name="opening_balance" value={formData.opening_balance} onChange={handleInputChange} className="w-full p-2 border border-slate-300 rounded-lg" placeholder="0.00" />
                         </div>
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">Closing Balance</label>
-                            <input
-                                type="number"
-                                name="closing_balance"
-                                value={formData.closing_balance}
-                                onChange={handleInputChange}
-                                className="w-full p-2 border border-slate-300 rounded-lg"
-                                placeholder="0.00"
-                            />
+                            <input type="number" name="closing_balance" value={formData.closing_balance} onChange={handleInputChange} className="w-full p-2 border border-slate-300 rounded-lg" placeholder="0.00" />
                         </div>
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
-                            <textarea
-                                name="notes"
-                                value={formData.notes}
-                                onChange={handleInputChange}
-                                rows="3"
-                                className="w-full p-2 border border-slate-300 rounded-lg"
-                                placeholder="Any discrepancies or notes..."
-                            ></textarea>
+                            <textarea name="notes" value={formData.notes} onChange={handleInputChange} rows="3" className="w-full p-2 border border-slate-300 rounded-lg" placeholder="Any discrepancies..."></textarea>
                         </div>
                         <button type="submit" className="btn-primary w-full flex items-center justify-center space-x-2">
                             <Save size={18} />
@@ -111,7 +108,6 @@ const DailyRegister = () => {
                     </form>
                 </div>
 
-                {/* List */}
                 <div className="card lg:col-span-2">
                     <h3 className="text-lg font-bold mb-4">Recent Registers</h3>
                     <div className="overflow-x-auto">
@@ -134,9 +130,7 @@ const DailyRegister = () => {
                                     </tr>
                                 ))}
                                 {registers.length === 0 && (
-                                    <tr>
-                                        <td colSpan="4" className="p-8 text-center text-slate-400">No registers found.</td>
-                                    </tr>
+                                    <tr><td colSpan="4" className="p-8 text-center text-slate-400">No registers found.</td></tr>
                                 )}
                             </tbody>
                         </table>
