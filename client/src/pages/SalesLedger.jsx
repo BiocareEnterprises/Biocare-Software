@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import api from '../api/axios';
+import { supabase } from '../supabase'; // Supabase connection
 import { Plus, FileSpreadsheet, Search, Trash2, Printer } from 'lucide-react';
 
 const SalesLedger = () => {
@@ -12,12 +12,11 @@ const SalesLedger = () => {
         date: new Date().toISOString().split('T')[0],
         shop_id: '',
         salesman_name: '',
-        items: [] // Array of { product_id, quantity, rate }
+        items: [] 
     });
     const [currentItem, setCurrentItem] = useState({ product_id: '', quantity: 1 });
 
     useEffect(() => {
-        console.log('SalesLedger mounted');
         fetchInvoices();
         fetchShops();
         fetchProducts();
@@ -25,28 +24,44 @@ const SalesLedger = () => {
 
     const fetchInvoices = async () => {
         try {
-            const res = await api.get('/sales');
-            setInvoices(res.data);
+            const { data, error } = await supabase
+                .from('invoices')
+                .select(`
+                    *,
+                    customers ( shop_name )
+                `)
+                .order('date', { ascending: false });
+
+            if (error) throw error;
+            if (data) setInvoices(data);
         } catch (error) {
-            console.error('Error fetching invoices:', error);
+            console.error('Error fetching invoices:', error.message);
         }
     };
 
     const fetchShops = async () => {
         try {
-            const res = await api.get('/shops');
-            setShops(res.data);
+            const { data, error } = await supabase
+                .from('customers')
+                .select('*')
+                .order('shop_name', { ascending: true });
+            if (error) throw error;
+            if (data) setShops(data);
         } catch (error) {
-            console.error('Error fetching shops:', error);
+            console.error('Error fetching shops:', error.message);
         }
     };
 
     const fetchProducts = async () => {
         try {
-            const res = await api.get('/products');
-            setProducts(res.data);
+            const { data, error } = await supabase
+                .from('products')
+                .select('*')
+                .order('name', { ascending: true });
+            if (error) throw error;
+            if (data) setProducts(data);
         } catch (error) {
-            console.error('Error fetching products:', error);
+            console.error('Error fetching products:', error.message);
         }
     };
 
@@ -63,7 +78,8 @@ const SalesLedger = () => {
             product_id: product.id,
             name: product.name,
             quantity: parseInt(currentItem.quantity),
-            rate: product.rate
+            rate: product.rate,
+            cost_price: product.cost_price
         };
 
         setFormData({
@@ -87,7 +103,49 @@ const SalesLedger = () => {
         e.preventDefault();
         try {
             const bill_amount = calculateTotal();
-            await api.post('/sales', { ...formData, bill_amount });
+            
+            // 1. Create Invoice
+            const { data: invoiceData, error: invoiceError } = await supabase
+                .from('invoices')
+                .insert([{
+                    invoice_no: formData.invoice_no,
+                    date: formData.date,
+                    shop_id: parseInt(formData.shop_id),
+                    salesman_name: formData.salesman_name,
+                    bill_amount: bill_amount
+                }])
+                .select();
+
+            if (invoiceError) throw invoiceError;
+            const newInvoice = invoiceData[0];
+
+            // 2. Insert Items & Deduct Stock
+            for (const item of formData.items) {
+                await supabase.from('invoice_items').insert([{
+                    invoice_id: newInvoice.id,
+                    product_id: item.product_id,
+                    quantity: item.quantity,
+                    rate: item.rate,
+                    cost_price: item.cost_price || 0,
+                    amount: item.quantity * item.rate
+                }]);
+
+                const prod = products.find(p => p.id === item.product_id);
+                if (prod) {
+                    await supabase.from('products')
+                        .update({ stock_quantity: prod.stock_quantity - item.quantity })
+                        .eq('id', item.product_id);
+                }
+            }
+
+            // 3. Update Customer Balance
+            const customer = shops.find(s => s.id === parseInt(formData.shop_id));
+            if (customer) {
+                await supabase.from('customers')
+                    .update({ balance: (customer.balance || 0) + bill_amount })
+                    .eq('id', customer.id);
+            }
+
             setShowModal(false);
             setFormData({
                 invoice_no: '',
@@ -97,13 +155,12 @@ const SalesLedger = () => {
                 items: []
             });
             fetchInvoices();
+            fetchShops();
+            fetchProducts();
+            alert("Invoice created successfully!");
         } catch (error) {
-            alert('Error creating invoice: ' + (error.response?.data?.error || error.message));
+            alert('Error creating invoice: ' + error.message);
         }
-    };
-
-    const handleExport = () => {
-        window.open('http://localhost:5000/api/reports/sales?format=xlsx', '_blank');
     };
 
     const handlePrint = (invoice) => {
@@ -129,18 +186,11 @@ const SalesLedger = () => {
                     .total-row { display: flex; justify-content: space-between; padding: 8px 0; }
                     .total-row.final { font-size: 18px; font-weight: bold; border-top: 2px solid #0f172a; margin-top: 10px; padding-top: 10px; }
                     .footer { margin-top: 60px; text-align: center; color: #94a3b8; font-size: 14px; border-top: 1px solid #e2e8f0; padding-top: 20px; }
-                    @media print {
-                        body { padding: 0; }
-                        .no-print { display: none; }
-                    }
                 </style>
             </head>
             <body>
                 <div class="header">
-                    <div class="logo">
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-                        Bio Care Software
-                    </div>
+                    <div class="logo">Bio Care Software</div>
                     <div class="invoice-details">
                         <div class="invoice-title">INVOICE</div>
                         <div>#${invoice.invoice_no}</div>
@@ -151,13 +201,12 @@ const SalesLedger = () => {
                 <div class="grid">
                     <div class="box">
                         <h3>Bill To</h3>
-                        <p>${invoice.shop_name}</p>
+                        <p>${invoice.customers?.shop_name || 'Customer'}</p>
                         <p style="font-weight: 400; font-size: 14px; margin-top: 5px; color: #64748b;">${invoice.salesman_name ? `Salesman: ${invoice.salesman_name}` : ''}</p>
                     </div>
                     <div class="box">
                         <h3>Payment Details</h3>
-                        <p>Total Payable: Rs. ${invoice.total_payable.toLocaleString()}</p>
-                        <p style="font-weight: 400; font-size: 14px; margin-top: 5px; color: #64748b;">Type: ${invoice.type || 'Sale'}</p>
+                        <p>Total Bill: Rs. ${invoice.bill_amount.toLocaleString()}</p>
                     </div>
                 </div>
 
@@ -165,35 +214,22 @@ const SalesLedger = () => {
                     <thead>
                         <tr>
                             <th>Item Description</th>
-                            <th style="text-align: right;">Rate</th>
                             <th style="text-align: right;">Amount</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
                             <td>Consolidated Bill Amount</td>
-                            <td style="text-align: right;">-</td>
                             <td style="text-align: right;">Rs. ${invoice.bill_amount.toLocaleString()}</td>
                         </tr>
                     </tbody>
                 </table>
 
                 <div class="totals">
-                    <div class="total-row">
-                        <span>Subtotal:</span>
-                        <span>Rs. ${invoice.bill_amount.toLocaleString()}</span>
-                    </div>
                     <div class="total-row final">
                         <span>Total:</span>
                         <span>Rs. ${invoice.bill_amount.toLocaleString()}</span>
                     </div>
-                </div>
-
-                <div style="clear: both;"></div>
-
-                <div class="footer">
-                    <p>Thank you for your business!</p>
-                    <p>Bio Care Software • 123 Business Rd, City, Country • +92 300 1234567</p>
                 </div>
 
                 <script>
@@ -205,17 +241,11 @@ const SalesLedger = () => {
         printWindow.document.close();
     };
 
-
-
     return (
         <div className="space-y-6">
             <div className="flex justify-between items-center">
-                <h2 className="text-2xl font-bold text-slate-800">Sales & Credit Ledger</h2>
+                <h2 className="text-2xl font-bold text-slate-800">Sales Ledger</h2>
                 <div className="flex space-x-3">
-                    <button onClick={handleExport} className="btn-primary bg-green-600 hover:bg-green-700 flex items-center space-x-2">
-                        <FileSpreadsheet size={18} />
-                        <span>Export to Excel</span>
-                    </button>
                     <button onClick={() => setShowModal(true)} className="btn-primary flex items-center space-x-2">
                         <Plus size={18} />
                         <span>New Invoice</span>
@@ -230,31 +260,23 @@ const SalesLedger = () => {
                         <thead>
                             <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
                                 <th className="p-4 font-medium">Date</th>
-                                <th className="p-4 font-medium">Type</th>
                                 <th className="p-4 font-medium">Invoice No</th>
                                 <th className="p-4 font-medium">Shop Name</th>
                                 <th className="p-4 font-medium">Salesman</th>
                                 <th className="p-4 font-medium text-right">Bill Amount</th>
-                                <th className="p-4 font-medium text-right">Total Payable</th>
                                 <th className="p-4 font-medium text-center">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             {invoices.map((inv) => (
-                                <tr key={inv.id} className={`border-b border-slate-100 hover:bg-slate-50 ${inv.type === 'Return' ? 'bg-red-50' : ''}`}>
+                                <tr key={inv.id} className="border-b border-slate-100 hover:bg-slate-50">
                                     <td className="p-4">{inv.date}</td>
-                                    <td className="p-4">
-                                        <span className={`px-2 py-1 rounded text-xs font-semibold ${inv.type === 'Return' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
-                                            {inv.type || 'Sale'}
-                                        </span>
-                                    </td>
                                     <td className="p-4 font-medium text-slate-800">{inv.invoice_no}</td>
-                                    <td className="p-4">{inv.shop_name}</td>
+                                    <td className="p-4">{inv.customers?.shop_name || 'N/A'}</td>
                                     <td className="p-4">{inv.salesman_name}</td>
-                                    <td className={`p-4 text-right font-medium ${inv.type === 'Return' ? 'text-red-600' : ''}`}>
-                                        {inv.type === 'Return' ? '-' : ''}Rs. {inv.bill_amount.toLocaleString()}
+                                    <td className="p-4 text-right font-medium text-blue-600">
+                                        Rs. {inv.bill_amount.toLocaleString()}
                                     </td>
-                                    <td className="p-4 text-right font-bold text-blue-600">Rs. {inv.total_payable.toLocaleString()}</td>
                                     <td className="p-4 text-center">
                                         <button
                                             onClick={() => handlePrint(inv)}
@@ -268,7 +290,7 @@ const SalesLedger = () => {
                             ))}
                             {invoices.length === 0 && (
                                 <tr>
-                                    <td colSpan="7" className="p-8 text-center text-slate-400">No invoices found.</td>
+                                    <td colSpan="6" className="p-8 text-center text-slate-400">No invoices found.</td>
                                 </tr>
                             )}
                         </tbody>
@@ -318,7 +340,7 @@ const SalesLedger = () => {
                                     >
                                         <option value="">Select Shop</option>
                                         {shops.map(shop => (
-                                            <option key={shop.id} value={shop.id}>{shop.name}</option>
+                                            <option key={shop.id} value={shop.id}>{shop.shop_name}</option>
                                         ))}
                                     </select>
                                 </div>
