@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../api/axios';
+import { supabase } from '../supabase';
 import { TrendingUp, AlertCircle, CheckCircle, Clock } from 'lucide-react';
 import SalesGraph from '../components/SalesGraph';
 
@@ -19,24 +19,22 @@ const Dashboard = () => {
 
     const fetchStats = async () => {
         try {
-            // In a real app, these would be aggregated on the backend. 
-            // For prototype, we'll fetch lists and calculate.
-            const [shopsRes, recoveryRes, chequesRes] = await Promise.all([
-                api.get('/shops'),
-                api.get('/recovery'),
-                api.get('/cheques')
+            const [customersRes, recoveryRes, chequesRes] = await Promise.all([
+                supabase.from('customers').select('balance'),
+                supabase.from('recoveries').select('date, amount'),
+                supabase.from('cheques').select('status')
             ]);
 
-            const shops = shopsRes.data;
-            const recoveries = recoveryRes.data;
-            const cheques = chequesRes.data;
+            const customers = customersRes.data || [];
+            const recoveries = recoveryRes.data || [];
+            const cheques = chequesRes.data || [];
 
-            const totalOutstanding = shops.reduce((sum, shop) => sum + (shop.current_balance || 0), 0);
+            const totalOutstanding = customers.reduce((sum, shop) => sum + (shop.balance || 0), 0);
 
             const today = new Date().toISOString().split('T')[0];
             const todayRecovery = recoveries
                 .filter(r => r.date === today)
-                .reduce((sum, r) => sum + r.amount, 0);
+                .reduce((sum, r) => sum + (r.amount || 0), 0);
 
             const pendingCheques = cheques.filter(c => c.status === 'Pending').length;
             const bouncedCheques = cheques.filter(c => c.status === 'Bounced').length;
@@ -48,7 +46,7 @@ const Dashboard = () => {
                 bouncedCheques
             });
         } catch (error) {
-            console.error('Error fetching stats:', error);
+            console.error('Error fetching stats:', error.message);
         }
     };
 
@@ -98,10 +96,8 @@ const Dashboard = () => {
                 />
             </div>
 
-            {/* Sales Graph */}
             <SalesGraph />
 
-            {/* Recent Activity or Charts could go here */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="card hover:shadow-md transition-shadow duration-300">
                     <h3 className="text-lg font-bold mb-4">Quick Actions</h3>
