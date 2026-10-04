@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import { supabase } from '../supabase';
 import { Plus, Trash2, FileSpreadsheet } from 'lucide-react';
 
 const DailyRecovery = () => {
@@ -18,15 +18,26 @@ const DailyRecovery = () => {
 
     const fetchData = async () => {
         try {
-            const [recoveryRes, shopsRes] = await Promise.all([
-                axios.get('http://localhost:5000/api/recovery'),
-                axios.get('http://localhost:5000/api/shops')
-            ]);
-            setRecoveries(recoveryRes.data);
-            setShops(shopsRes.data);
+            // 1. Fetch Recoveries
+            const { data: recData, error: recError } = await supabase
+                .from('recoveries')
+                .select('*')
+                .order('date', { ascending: false });
+
+            // 2. Fetch Customers
+            const { data: shopData, error: shopError } = await supabase
+                .from('customers')
+                .select('*')
+                .order('shop_name', { ascending: true });
+
+            if (recError) throw recError;
+            if (shopError) throw shopError;
+
+            setRecoveries(recData || []);
+            setShops(shopData || []);
             setLoading(false);
         } catch (error) {
-            console.error('Error fetching data:', error);
+            console.error('Error fetching data:', error.message);
             setLoading(false);
         }
     };
@@ -42,15 +53,50 @@ const DailyRecovery = () => {
     const handleSubmit = async (e) => {
         e.preventDefault();
         try {
-            // Map frontend state to backend expected fields
-            const payload = {
-                ...formData,
-                salesman_name: 'Admin', // Placeholder
-                cheque_ref_no: formData.cheque_number, // Map cheque_number to cheque_ref_no
-                due_date: formData.cheque_date         // Map cheque_date to due_date
-            };
+            const amount = parseFloat(formData.amount);
+            const shopId = parseInt(formData.shop_id);
 
-            await axios.post('http://localhost:5000/api/recovery', payload);
+            // 1. Insert Recovery into 'recoveries' table
+            const { data: newRecData, error: recError } = await supabase
+                .from('recoveries')
+                .insert([{
+                    date: formData.date,
+                    shop_id: shopId,
+                    amount: amount,
+                    mode: formData.mode,
+                    cheque_ref_no: formData.mode === 'Cheque' ? formData.cheque_number : null,
+                    salesman_name: 'Admin'
+                }])
+                .select();
+
+            if (recError) throw recError;
+            const newRecovery = newRecData[0];
+
+            // 2. Update Customer Balance (Deduct Payment)
+            const customer = shops.find(s => s.id === shopId);
+            if (customer) {
+                const newBalance = (customer.balance || 0) - amount;
+                const { error: updateError } = await supabase
+                    .from('customers')
+                    .update({ balance: newBalance })
+                    .eq('id', customer.id);
+                if (updateError) throw updateError;
+            }
+
+            // 3. If Cheque, insert into 'cheques' table
+            if (formData.mode === 'Cheque') {
+                const { error: chequeError } = await supabase
+                    .from('cheques')
+                    .insert([{
+                        recovery_id: newRecovery.id,
+                        cheque_no: formData.cheque_number,
+                        bank_name: formData.bank_name,
+                        amount: amount,
+                        due_date: formData.cheque_date,
+                        status: 'Pending'
+                    }]);
+                if (chequeError) throw chequeError;
+            }
 
             setFormData({
                 date: new Date().toISOString().split('T')[0],
@@ -62,21 +108,33 @@ const DailyRecovery = () => {
                 cheque_date: ''
             });
             fetchData();
+            alert("Recovery added successfully!");
         } catch (error) {
-            console.error('Error adding recovery:', error);
-            alert('Error adding recovery: ' + (error.response?.data?.error || error.message));
+            console.error('Error adding recovery:', error.message);
+            alert('Error: ' + error.message);
         }
     };
 
     const handleDelete = async (id) => {
         if (window.confirm('Are you sure you want to delete this entry?')) {
             try {
-                await axios.delete(`http://localhost:5000/api/recovery/${id}`);
+                const { error } = await supabase.from('recoveries').delete().eq('id', id);
+                if (error) throw error;
                 fetchData();
             } catch (error) {
-                console.error('Error deleting recovery:', error);
+                console.error('Error deleting recovery:', error.message);
+                alert('Error: ' + error.message);
             }
         }
+    };
+
+    const getCustomerName = (shopId) => {
+        const customer = shops.find(s => s.id === shopId);
+        return customer ? customer.shop_name : 'Unknown';
+    };
+
+    const handleExport = () => {
+        alert("Export functionality will be enabled soon!");
     };
 
     return (
@@ -84,7 +142,7 @@ const DailyRecovery = () => {
             <div className="flex justify-between items-center mb-6">
                 <h2 className="text-2xl font-bold">Daily Recovery Log</h2>
                 <button
-                    onClick={() => window.open('http://localhost:5000/api/reports/recovery', '_blank')}
+                    onClick={handleExport}
                     className="btn-primary bg-green-600 hover:bg-green-700 flex items-center space-x-2"
                 >
                     <FileSpreadsheet size={18} />
@@ -118,7 +176,7 @@ const DailyRecovery = () => {
                         >
                             <option value="">Select Shop</option>
                             {shops.map(shop => (
-                                <option key={shop.id} value={shop.id}>{shop.name}</option>
+                                <option key={shop.id} value={shop.id}>{shop.shop_name}</option>
                             ))}
                         </select>
                     </div>
@@ -187,7 +245,7 @@ const DailyRecovery = () => {
                         </>
                     )}
 
-                    <div className="md:col-span-6 flex justify-end">
+                    <div className="md:col-span-6 flex justify-end mt-2">
                         <button type="submit" className="btn-primary flex items-center">
                             <Plus size={18} className="mr-2" />
                             Add Entry
@@ -223,7 +281,7 @@ const DailyRecovery = () => {
                                 recoveries.map((entry) => (
                                     <tr key={entry.id} className="border-b border-slate-100 hover:bg-slate-50">
                                         <td className="p-4">{entry.date}</td>
-                                        <td className="p-4 font-medium text-slate-800">{entry.shop_name || entry.customer_name}</td>
+                                        <td className="p-4 font-medium text-slate-800">{getCustomerName(entry.shop_id)}</td>
                                         <td className="p-4 text-right font-bold text-green-600">
                                             PKR {entry.amount.toLocaleString()}
                                         </td>
@@ -233,7 +291,7 @@ const DailyRecovery = () => {
                                                 {entry.mode}
                                             </span>
                                         </td>
-                                        <td className="p-4 text-slate-500">{entry.cheque_ref_no || entry.cheque_number || '-'}</td>
+                                        <td className="p-4 text-slate-500">{entry.cheque_ref_no || '-'}</td>
                                         <td className="p-4 text-center">
                                             <button
                                                 onClick={() => handleDelete(entry.id)}
